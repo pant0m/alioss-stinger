@@ -51,5 +51,5 @@ Usage of C:\Users\xxx\AppData\Local\Temp\go-build3967568892\b001\exe\main.exe:
 
 # 阿里云安全配置
 按照这个配置就可以了。
-https://www.yuque.com/pant0m/netsecnote/kyqg65wkmxycfhei
+https://www.yuque.com/pantom/netsecnote/kyqg65wkmxycfhei
 
