@@ -50,5 +50,5 @@ Usage of C:\Users\xxx\AppData\Local\Temp\go-build3967568892\b001\exe\main.exe:
 ![image-20221214185022534](README.assets/image-20221214185022534.png)
 
 # 阿里云安全配置
-参考：https://www.yuque.com/pant0m
+[参考](https://www.yuque.com/pant0m/netsecnote/kyqg65wkmxycfhei)
 
