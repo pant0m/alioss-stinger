@@ -10,24 +10,31 @@
 
 参考：https://github.com/9bie/oss-stinger
 
-修改39行就好，加入内网代理服务器
-
-```
-ossClient, err = oss.New(endPoint, accessKeyId, accessKeySecret, oss.AuthProxy("http://127.0.0.1:8080", "", ""))
-```
+如需通过代理访问，可在 `storage/aliyun.go` 中修改 `oss.New(...)` 调用，加入 `oss.AuthProxy("http://127.0.0.1:8080", "", "")` 参数。
 
 ## 如何使用
 
 ```
-PS C:\Users\xxx\Desktop\github\goalioss-stinger> go run .\main.go -h
-Usage of C:\Users\xxx\AppData\Local\Temp\go-build3967568892\b001\exe\main.exe:
+Usage of alioss-stinger:
   -address string
         监听地址或者目标地址，格式：127.0.0.1:8080
   -mode string
         client/server 二选一
   -osskey string
-        format: endpoint:accessKeyId:accessKeySecret:bucketName
+        format: endpoint:accessKeyId:accessKeySecret:bucketName[:domain] (domain 仅七牛需要)
+  -provider string
+        云厂商: aliyun / tencent / aws / huawei / qiniu (default "aliyun")
 ```
+
+### 支持的云厂商
+
+| provider | endpoint 字段 | bucket 字段 | 备注 |
+| -------- | ------------- | ----------- | ---- |
+| aliyun   | OSS endpoint，例如 `oss-cn-hangzhou.aliyuncs.com` | bucket 名 | 默认 |
+| tencent  | region，例如 `ap-guangzhou` | `<bucket>-<appid>`，例如 `mybucket-1250000000` | |
+| aws      | region，例如 `us-east-1` | bucket 名 | |
+| huawei   | OBS endpoint，例如 `obs.cn-north-4.myhuaweicloud.com` | bucket 名 | |
+| qiniu    | 可留空 | bucket 名 | 需追加第 5 段 `domain`（下载域名，不含 scheme） |
 
 ### CS
 
@@ -38,7 +45,20 @@ Usage of C:\Users\xxx\AppData\Local\Temp\go-build3967568892\b001\exe\main.exe:
 ### 服务端运行
 
 ```
+# 阿里云（默认）
 .\alioss-stinger.exe -address 127.0.0.1:8001 -mode server -osskey endpoint:accessKeyId:accessKeySecret:bucketName
+
+# 腾讯云
+.\alioss-stinger.exe -provider tencent -address 127.0.0.1:8001 -mode server -osskey ap-guangzhou:SecretId:SecretKey:mybucket-1250000000
+
+# AWS
+.\alioss-stinger.exe -provider aws -address 127.0.0.1:8001 -mode server -osskey us-east-1:AKID:SECRET:mybucket
+
+# 华为云
+.\alioss-stinger.exe -provider huawei -address 127.0.0.1:8001 -mode server -osskey obs.cn-north-4.myhuaweicloud.com:ak:sk:mybucket
+
+# 七牛（第 5 段是下载域名）
+.\alioss-stinger.exe -provider qiniu -address 127.0.0.1:8001 -mode server -osskey :ak:sk:mybucket:cdn.example.com
 ```
 
 ### 客户端运行
