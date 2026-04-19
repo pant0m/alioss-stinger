@@ -15,40 +15,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/google/uuid"
+
+	"alioss-stinger/storage"
 )
 
-type Client struct {
-	Cli             *oss.Client
-	Bucket          *oss.Bucket
-	Endpoint        string
-	AccessKeyId     string
-	AccessKeySecret string
-	BucketName      string
-}
-
-var Service *Client
-
-func InitClient(endPoint, accessKeyId, accessKeySecret, bucketName string) error {
-	ossClient, err := oss.New(endPoint, accessKeyId, accessKeySecret)
-	if err != nil {
-		return err
-	}
-	ossBucket, err := ossClient.Bucket(bucketName)
-	if err != nil {
-		return err
-	}
-	Service = &Client{
-		Cli:             ossClient,
-		Bucket:          ossBucket,
-		Endpoint:        endPoint,
-		AccessKeyId:     accessKeyId,
-		AccessKeySecret: accessKeySecret,
-		BucketName:      bucketName,
-	}
-	return nil
-}
+var Service storage.Storage
 
 var (
 	server_address string
@@ -57,7 +29,8 @@ var (
 )
 
 func main() {
-	osskey := flag.String("osskey", "", "format: endpoint:accessKeyId:accessKeySecret:bucketName")
+	provider := flag.String("provider", "aliyun", "云厂商: aliyun / tencent / aws")
+	osskey := flag.String("osskey", "", "format: endpoint:accessKeyId:accessKeySecret:bucketName (endpoint 对腾讯云/AWS 填 region)")
 	mode := flag.String("mode", "", "client/server 二选一")
 	address := flag.String("address", "", "监听地址或者目标地址，格式：127.0.0.1:8080")
 	flag.Parse()
@@ -75,9 +48,17 @@ func main() {
 	server_address = *address
 	bind_address = *address
 
-	if err := InitClient(parts[0], parts[1], parts[2], parts[3]); err != nil {
-		log.Fatalln("[x]", "初始化 OSS 客户端失败:", err)
+	s, err := storage.New(*provider, storage.Config{
+		Endpoint:        parts[0],
+		AccessKeyID:     parts[1],
+		AccessKeySecret: parts[2],
+		Bucket:          parts[3],
+	})
+	if err != nil {
+		log.Fatalln("[x]", "初始化云存储客户端失败:", err)
 	}
+	Service = s
+	log.Println("[+]", "使用云厂商:", *provider)
 
 	switch *mode {
 	case "client":
@@ -95,28 +76,24 @@ func startServer() {
 	var inflight sync.Map
 	for {
 		time.Sleep(1 * time.Second)
-		for _, c2 := range List(Service) {
-			if !strings.Contains(c2.Key, "client.txt") {
+		keys, err := Service.List("", 100)
+		if err != nil {
+			log.Println("[-]", "List 失败:", err)
+			continue
+		}
+		for _, k := range keys {
+			if !strings.Contains(k, "client.txt") {
 				continue
 			}
-			if _, loaded := inflight.LoadOrStore(c2.Key, struct{}{}); loaded {
+			if _, loaded := inflight.LoadOrStore(k, struct{}{}); loaded {
 				continue
 			}
 			go func(key string) {
 				defer inflight.Delete(key)
 				process_server(key)
-			}(c2.Key)
+			}(k)
 		}
 	}
-}
-
-func List(c *Client) []oss.ObjectProperties {
-	lsRes, err := c.Bucket.ListObjects(oss.MaxKeys(100), oss.Prefix(""))
-	if err != nil {
-		log.Println("[-]", "ListObjects 失败:", err)
-		return nil
-	}
-	return lsRes.Objects
 }
 
 func startClient() {
@@ -256,28 +233,22 @@ func process(conn net.Conn) {
 	}
 }
 
-func Send(c *Client, name string, content string) {
-	if err := c.Bucket.PutObject(name, strings.NewReader(content)); err != nil {
+func Send(s storage.Storage, name, content string) {
+	if err := s.Put(name, []byte(content)); err != nil {
 		log.Println("[-]", "上传失败:", err)
 	}
 }
 
-func Get(c *Client, name string) []byte {
-	body, err := c.Bucket.GetObject(name)
+func Get(s storage.Storage, name string) []byte {
+	data, err := s.Get(name)
 	if err != nil {
-		return nil
-	}
-	defer body.Close()
-	data, err := io.ReadAll(body)
-	if err != nil {
-		log.Println("[-]", "读取对象失败:", err)
 		return nil
 	}
 	return data
 }
 
-func Del(c *Client, name string) {
-	if err := c.Bucket.DeleteObject(name); err != nil {
+func Del(s storage.Storage, name string) {
+	if err := s.Delete(name); err != nil {
 		log.Println("[-]", "删除对象失败:", name, err)
 	}
 }

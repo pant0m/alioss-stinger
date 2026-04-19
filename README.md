@@ -10,24 +10,29 @@
 
 参考：https://github.com/9bie/oss-stinger
 
-修改39行就好，加入内网代理服务器
-
-```
-ossClient, err = oss.New(endPoint, accessKeyId, accessKeySecret, oss.AuthProxy("http://127.0.0.1:8080", "", ""))
-```
+如需通过代理访问，可在 `storage/aliyun.go` 中修改 `oss.New(...)` 调用，加入 `oss.AuthProxy("http://127.0.0.1:8080", "", "")` 参数。
 
 ## 如何使用
 
 ```
-PS C:\Users\xxx\Desktop\github\goalioss-stinger> go run .\main.go -h
-Usage of C:\Users\xxx\AppData\Local\Temp\go-build3967568892\b001\exe\main.exe:
+Usage of alioss-stinger:
   -address string
         监听地址或者目标地址，格式：127.0.0.1:8080
   -mode string
         client/server 二选一
   -osskey string
-        format: endpoint:accessKeyId:accessKeySecret:bucketName
+        format: endpoint:accessKeyId:accessKeySecret:bucketName (endpoint 对腾讯云/AWS 填 region)
+  -provider string
+        云厂商: aliyun / tencent / aws (default "aliyun")
 ```
+
+### 支持的云厂商
+
+| provider | endpoint 字段 | bucket 字段                         |
+| -------- | ------------- | ----------------------------------- |
+| aliyun   | OSS endpoint，例如 `oss-cn-hangzhou.aliyuncs.com` | bucket 名 |
+| tencent  | region，例如 `ap-guangzhou` | `<bucket>-<appid>`，例如 `mybucket-1250000000` |
+| aws      | region，例如 `us-east-1` | bucket 名 |
 
 ### CS
 
@@ -38,7 +43,14 @@ Usage of C:\Users\xxx\AppData\Local\Temp\go-build3967568892\b001\exe\main.exe:
 ### 服务端运行
 
 ```
+# 阿里云（默认）
 .\alioss-stinger.exe -address 127.0.0.1:8001 -mode server -osskey endpoint:accessKeyId:accessKeySecret:bucketName
+
+# 腾讯云
+.\alioss-stinger.exe -provider tencent -address 127.0.0.1:8001 -mode server -osskey ap-guangzhou:SecretId:SecretKey:mybucket-1250000000
+
+# AWS
+.\alioss-stinger.exe -provider aws -address 127.0.0.1:8001 -mode server -osskey us-east-1:AKID:SECRET:mybucket
 ```
 
 ### 客户端运行
