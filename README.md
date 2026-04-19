@@ -21,18 +21,20 @@ Usage of alioss-stinger:
   -mode string
         client/server 二选一
   -osskey string
-        format: endpoint:accessKeyId:accessKeySecret:bucketName (endpoint 对腾讯云/AWS 填 region)
+        format: endpoint:accessKeyId:accessKeySecret:bucketName[:domain] (domain 仅七牛需要)
   -provider string
-        云厂商: aliyun / tencent / aws (default "aliyun")
+        云厂商: aliyun / tencent / aws / huawei / qiniu (default "aliyun")
 ```
 
 ### 支持的云厂商
 
-| provider | endpoint 字段 | bucket 字段                         |
-| -------- | ------------- | ----------------------------------- |
-| aliyun   | OSS endpoint，例如 `oss-cn-hangzhou.aliyuncs.com` | bucket 名 |
-| tencent  | region，例如 `ap-guangzhou` | `<bucket>-<appid>`，例如 `mybucket-1250000000` |
-| aws      | region，例如 `us-east-1` | bucket 名 |
+| provider | endpoint 字段 | bucket 字段 | 备注 |
+| -------- | ------------- | ----------- | ---- |
+| aliyun   | OSS endpoint，例如 `oss-cn-hangzhou.aliyuncs.com` | bucket 名 | 默认 |
+| tencent  | region，例如 `ap-guangzhou` | `<bucket>-<appid>`，例如 `mybucket-1250000000` | |
+| aws      | region，例如 `us-east-1` | bucket 名 | |
+| huawei   | OBS endpoint，例如 `obs.cn-north-4.myhuaweicloud.com` | bucket 名 | |
+| qiniu    | 可留空 | bucket 名 | 需追加第 5 段 `domain`（下载域名，不含 scheme） |
 
 ### CS
 
@@ -51,6 +53,12 @@ Usage of alioss-stinger:
 
 # AWS
 .\alioss-stinger.exe -provider aws -address 127.0.0.1:8001 -mode server -osskey us-east-1:AKID:SECRET:mybucket
+
+# 华为云
+.\alioss-stinger.exe -provider huawei -address 127.0.0.1:8001 -mode server -osskey obs.cn-north-4.myhuaweicloud.com:ak:sk:mybucket
+
+# 七牛（第 5 段是下载域名）
+.\alioss-stinger.exe -provider qiniu -address 127.0.0.1:8001 -mode server -osskey :ak:sk:mybucket:cdn.example.com
 ```
 
 ### 客户端运行

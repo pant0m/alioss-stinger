@@ -29,8 +29,8 @@ var (
 )
 
 func main() {
-	provider := flag.String("provider", "aliyun", "云厂商: aliyun / tencent / aws")
-	osskey := flag.String("osskey", "", "format: endpoint:accessKeyId:accessKeySecret:bucketName (endpoint 对腾讯云/AWS 填 region)")
+	provider := flag.String("provider", "aliyun", "云厂商: aliyun / tencent / aws / huawei / qiniu")
+	osskey := flag.String("osskey", "", "format: endpoint:accessKeyId:accessKeySecret:bucketName[:domain] (domain 仅七牛需要)")
 	mode := flag.String("mode", "", "client/server 二选一")
 	address := flag.String("address", "", "监听地址或者目标地址，格式：127.0.0.1:8080")
 	flag.Parse()
@@ -40,20 +40,25 @@ func main() {
 		os.Exit(0)
 	}
 
-	parts := strings.SplitN(*osskey, ":", 4)
-	if len(parts) != 4 {
-		log.Fatalln("[x]", "osskey 格式错误，需要: endpoint:accessKeyId:accessKeySecret:bucketName")
+	parts := strings.SplitN(*osskey, ":", 5)
+	if len(parts) < 4 {
+		log.Fatalln("[x]", "osskey 格式错误，需要: endpoint:accessKeyId:accessKeySecret:bucketName[:domain]")
+	}
+
+	cfg := storage.Config{
+		Endpoint:        parts[0],
+		AccessKeyID:     parts[1],
+		AccessKeySecret: parts[2],
+		Bucket:          parts[3],
+	}
+	if len(parts) == 5 {
+		cfg.Domain = parts[4]
 	}
 
 	server_address = *address
 	bind_address = *address
 
-	s, err := storage.New(*provider, storage.Config{
-		Endpoint:        parts[0],
-		AccessKeyID:     parts[1],
-		AccessKeySecret: parts[2],
-		Bucket:          parts[3],
-	})
+	s, err := storage.New(*provider, cfg)
 	if err != nil {
 		log.Fatalln("[x]", "初始化云存储客户端失败:", err)
 	}

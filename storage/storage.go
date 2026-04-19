@@ -15,17 +15,23 @@ type Storage interface {
 // 各 provider 对字段的解释略有差异，参见下方常量说明。
 type Config struct {
 	// Endpoint 对于阿里云是 OSS endpoint（oss-cn-hangzhou.aliyuncs.com），
-	// 对于腾讯云 COS / AWS S3 是 region（ap-guangzhou / us-east-1）。
+	// 对于腾讯云 COS / AWS S3 是 region（ap-guangzhou / us-east-1），
+	// 对于华为云 OBS 是 endpoint（obs.cn-north-4.myhuaweicloud.com），
+	// 对于七牛 Kodo 可留空。
 	Endpoint        string
 	AccessKeyID     string
 	AccessKeySecret string
 	Bucket          string
+	// Domain 仅七牛 Kodo 使用，是下载用的 CDN/测试域名（不带 scheme）。
+	Domain string
 }
 
 const (
 	ProviderAliyun  = "aliyun"
 	ProviderTencent = "tencent"
 	ProviderAWS     = "aws"
+	ProviderHuawei  = "huawei"
+	ProviderQiniu   = "qiniu"
 )
 
 // New 根据 provider 名称构造对应的 Storage 实例。
@@ -37,7 +43,11 @@ func New(provider string, cfg Config) (Storage, error) {
 		return NewTencent(cfg)
 	case ProviderAWS:
 		return NewAWS(cfg)
+	case ProviderHuawei:
+		return NewHuawei(cfg)
+	case ProviderQiniu:
+		return NewQiniu(cfg)
 	default:
-		return nil, fmt.Errorf("不支持的云厂商: %q (支持: aliyun/tencent/aws)", provider)
+		return nil, fmt.Errorf("不支持的云厂商: %q (支持: aliyun/tencent/aws/huawei/qiniu)", provider)
 	}
 }
